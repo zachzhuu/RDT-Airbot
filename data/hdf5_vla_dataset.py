@@ -121,10 +121,8 @@ class HDF5VLADataset:
             if num_steps < 128:
                 return False, None
             
-            q = data["get_current_joint_q"]
-            q = np.array(q)
-
-            eef = data['get_current_end']
+            q = data['robot_gripper_joint']
+            eef = data['robot_gripper_joint']
             eef = [0 if eef[i] < 0.05 else 1 if eef[i] > 0.95 else eef[i] for i in range(len(eef))]
             eef = np.array(eef).reshape(-1, 1)
             qpos = np.concatenate([q, eef], axis=1)
@@ -168,7 +166,11 @@ class HDF5VLADataset:
                 "instruction": instruction
             }
 
-            target_qpos = qpos[1:self.CHUNK_SIZE+1]
+            target_q = data['teacher_arm_joint'][step_id:step_id+self.CHUNK_SIZE]
+            target_eef = data['teacher_gripper_joint'][step_id:step_id+self.CHUNK_SIZE]
+            target_eef = [0 if target_eef[i] < 0.05 else 1 if target_eef[i] > 0.95 else target_eef[i] for i in range(len(target_eef))]
+            target_eef = np.array(target_eef).reshape(-1, 1)
+            target_qpos = np.concatenate([target_q, target_eef], axis=1)
             
             # Parse the state and action
             state = qpos[step_id:step_id+1]
@@ -415,13 +417,17 @@ class HDF5VLADataset:
             if num_steps < 128:
                 return False, None
             
-            q = data["get_current_joint_q"]
-            q = np.array(q)
-
-            eef = data['get_current_end']
+            q = data['robot_arm_joint']
+            eef = data['robot_gripper_joint']
             eef = [0 if eef[i] < 0.05 else 1 if eef[i] > 0.95 else eef[i] for i in range(len(eef))]
             eef = np.array(eef).reshape(-1, 1)
             qpos = np.concatenate([q, eef], axis=1)
+
+            target_q = data['teacher_arm_joint']
+            target_eef = data['teacher_gripper_joint']
+            target_eef = [0 if target_eef[i] < 0.05 else 1 if target_eef[i] > 0.95 else target_eef[i] for i in range(len(target_eef))]
+            target_eef = np.array(target_eef).reshape(-1, 1)
+            target_qpos = np.concatenate([target_q, target_eef], axis=1)
 
             # [Optional] We skip the first few still steps
             # Get the idx of the first qpos whose delta exceeds the threshold
@@ -434,11 +440,8 @@ class HDF5VLADataset:
                 raise ValueError("Found no qpos that exceeds the threshold.")
             
             # Parse the state and action
-            action = qpos[first_idx:]
-            
-            state_1 = action[:-1]
-            state_0 = qpos[first_idx-1].reshape(1, -1)
-            state = np.concatenate([state_0, state_1], axis=0)
+            state = qpos[first_idx - 1:]
+            action = target_qpos[first_idx - 1:]
             
             # Fill the state/action into the unified vector
             def fill_in_state(values):

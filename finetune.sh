@@ -14,7 +14,7 @@ export VISION_ENCODER_NAME="google/siglip-so400m-patch14-384"
 export OUTPUT_DIR="./checkpoints/rdt-finetune-1b"
 export CFLAGS="-I/usr/include"
 export LDFLAGS="-L/usr/lib/x86_64-linux-gnu"
-export CUTLASS_PATH="/home/zach/repos/cutlass"
+export CUTLASS_PATH="/home/jiahong/cutlass"
 
 export WANDB_PROJECT="robotics_diffusion_transformer"
 
