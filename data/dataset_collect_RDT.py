@@ -279,3 +279,12 @@ if __name__ == '__main__':
         pipeline_ex.stop()
         pipeline_wrist.stop()
         print('End')
+
+# # get the serial number of the realsense cameras
+# ctx = rs.context()
+# connected_devices = []
+#
+# for d in ctx.devices:
+#     print("Found device:", d.get_info(rs.camera_info.name),
+#           "Serial number:", d.get_info(rs.camera_info.serial_number))
+#     connected_devices.append(d.get_info(rs.camera_info.serial_number))
