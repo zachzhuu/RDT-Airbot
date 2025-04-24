@@ -20,12 +20,12 @@ def record_data(color_image_ex, depth_image_ex, color_image_wrist, play_robot, t
     data['timestamp'][record_step] = time.time()
     data['robot_arm_joint'][record_step] = play_robot.get_current_joint_q()
     data['robot_gripper_joint'][record_step] = play_robot.get_current_end()
-    data['robot_arm_joint_v'][record_step] = play_robot.get_current_joint_v()
+    # data['robot_arm_joint_v'][record_step] = play_robot.get_current_joint_v()
     data['robot_end_effector_position'][record_step] = play_robot.get_current_translation()
     data['robot_end_effector_rotation'][record_step] = play_robot.get_current_rotation()
     data['teacher_arm_joint'][record_step] = teacher_robot.get_current_joint_q()
     data['teacher_gripper_joint'][record_step] = teacher_robot.get_current_end()
-    data['teacher_arm_joint_v'][record_step] = teacher_robot.get_current_joint_v()
+    # data['teacher_arm_joint_v'][record_step] = teacher_robot.get_current_joint_v()
     data['teacher_end_effector_position'][record_step] = teacher_robot.get_current_translation()
     data['teacher_end_effector_rotation'][record_step] = teacher_robot.get_current_rotation()
     data['color_image_ex'][record_step] = color_image_ex
@@ -51,12 +51,12 @@ def record_data(color_image_ex, depth_image_ex, color_image_wrist, play_robot, t
             'timestamp': [0.0] * record_steps_num,
             'robot_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
             'robot_gripper_joint': [0.0] * record_steps_num,
-            'robot_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+            # 'robot_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
             'robot_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
             'robot_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
             'teacher_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
             'teacher_gripper_joint': [0.0] * record_steps_num,
-            'teacher_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+            # 'teacher_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
             'teacher_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
             'teacher_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
             'color_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width, 3]),
@@ -183,12 +183,12 @@ if __name__ == '__main__':
         'timestamp': [0.0] * record_steps_num,
         'robot_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
         'robot_gripper_joint': [0.0] * record_steps_num,
-        'robot_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        # 'robot_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
         'robot_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
         'robot_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
         'teacher_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
         'teacher_gripper_joint': [0.0] * record_steps_num,
-        'teacher_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        # 'teacher_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
         'teacher_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
         'teacher_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
         'color_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width, 3]),
@@ -279,12 +279,3 @@ if __name__ == '__main__':
         pipeline_ex.stop()
         pipeline_wrist.stop()
         print('End')
-
-# # check the serial number of the realsense cameras
-# ctx = rs.context()
-# connected_devices = []
-#
-# for d in ctx.devices:
-#     print("Found device:", d.get_info(rs.camera_info.name),
-#           "Serial number:", d.get_info(rs.camera_info.serial_number))
-#     connected_devices.append(d.get_info(rs.camera_info.serial_number))
