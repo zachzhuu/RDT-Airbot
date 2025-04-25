@@ -128,7 +128,7 @@ if __name__ == '__main__':
         serial = dev.get_info(rs.camera_info.serial_number)
         print(f"Resetting camera: {serial}")
         dev.hardware_reset()
-    time.sleep(5)
+    time.sleep(10)
 
     # Initialize the realsense cameras
     pipeline_ex = rs.pipeline()
