@@ -14,7 +14,7 @@ import copy
 
 def record_data(color_image_ex, depth_image_ex, color_image_wrist, play_robot, teacher_robot):
     '''The function is the main function of data reading and recording.'''
-    global record_path, data, record_episode, record_flag, record_step, record_steps_num, control_in_main
+    global record_path, data, record_flag, record_step, record_steps_num, control_in_main
 
     # record data: play_robot -> state, teacher_robot -> action
     data['timestamp'][record_step] = time.time()
@@ -37,44 +37,15 @@ def record_data(color_image_ex, depth_image_ex, color_image_wrist, play_robot, t
     play_robot.set_target_joint_q(data['teacher_arm_joint'][record_step], use_planning=False, blocking=False)
 
     record_step += 1
-    # save the data and initialize the data
+    # initialize the parameters
     if record_step >= record_steps_num:
         record_flag = False
-        filename = os.path.join(record_path, f'ep{record_episode:02}.pkl')
-        data_copy = copy.deepcopy(data)
-        data_saving = multiprocessing.Process(target=save_data, args=(filename, data_copy))  # this step will take long time. so we run it in subprocess
-        data_saving.start()
-
-        record_step = 0
-        record_episode += 1
-        data = {
-            'timestamp': [0.0] * record_steps_num,
-            'robot_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-            'robot_gripper_joint': [0.0] * record_steps_num,
-            # 'robot_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-            'robot_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
-            'robot_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-            'teacher_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-            'teacher_gripper_joint': [0.0] * record_steps_num,
-            # 'teacher_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-            'teacher_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
-            'teacher_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-            'color_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width, 3]),
-            'depth_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width]),
-            'color_image_wrist': np.zeros([record_steps_num, record_img_height, record_img_width, 3])
-        }
-
         control_in_main = True
+        record_step = 0
 
 
 def save_data(filename, data):
     '''The function is used to save the data via pickle.'''
-    for key in data:
-        if isinstance(data[key], list):
-            if len(data[key]) == record_steps_num:
-                data[key] = np.array(data[key]).reshape(-1, 1)
-            else:
-                data[key] = np.array(data[key])
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
         print(f"Data saved to {filename}")
@@ -82,7 +53,7 @@ def save_data(filename, data):
 
 def record_loop():
     '''The function is used to record the data periodically.'''
-    global record_flag, record_freq, play_robot, teacher_robot, record_step
+    global record_flag, record_freq, play_robot, teacher_robot, record_step, record_episode, data
     period = 1.0 / record_freq
     next_time = time.time()
 
@@ -100,6 +71,30 @@ def record_loop():
         else:
             print(f"Warning: Processing slower than real-time in step {record_step}.")
             next_time = time.time()  # reset time to avoid drift
+
+    # record the data and initialize the episode
+    filename = os.path.join(record_path, f'ep{record_episode:02}.pkl')
+    data_copy = copy.deepcopy(data)
+    data_saving = multiprocessing.Process(target=save_data, args=(filename, data_copy))  # this step will take long time. so we run it in subprocess
+    data_saving.start()
+
+    record_episode += 1
+    data = {
+        'timestamp': [0.0] * record_steps_num,
+        'robot_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        'robot_gripper_joint': [0.0] * record_steps_num,
+        # 'robot_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        'robot_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
+        'robot_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        'teacher_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        'teacher_gripper_joint': [0.0] * record_steps_num,
+        # 'teacher_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        'teacher_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
+        'teacher_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
+        'color_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width, 3]),
+        'depth_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width]),
+        'color_image_wrist': np.zeros([record_steps_num, record_img_height, record_img_width, 3])
+    }
 
 
 if __name__ == '__main__':
@@ -237,12 +232,13 @@ if __name__ == '__main__':
 
             # show the frames in the cv2 window
             depth_colormap_ex = cv2.applyColorMap(cv2.convertScaleAbs(depth_image_ex, alpha=0.03), cv2.COLORMAP_JET)
-            image_show = np.hstack((color_image_ex, depth_colormap_ex, color_image_wrist))
-            cv2.putText(image_show, f'epoch={record_episode}', (30, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
-            cv2.circle(image_show, (320, 240), 5, (255, 0, 0), -1)
-            if record_flag == True:
-                cv2.circle(image_show, (30, 60), 20, (0, 0, 255), -1)
-                cv2.putText(image_show, str(record_step), (30, 250), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+            text_info_canvas = np.zeros_like(color_image_wrist)
+            cv2.putText(text_info_canvas, f'Frequency: {record_freq}, Time: {record_time}', (200, 190))
+            cv2.putText(text_info_canvas, f'Episode: {record_episode}', (200, 290))
+            cv2.putText(text_info_canvas, f'Step: {record_step}/{record_steps_num}', (200, 390))
+            top_row = np.hstack((color_image_ex, depth_colormap_ex))
+            bottom_row = np.hstack((color_image_wrist, text_info_canvas))
+            image_show = np.vstack((top_row, bottom_row))
             cv2.imshow('RealSense', image_show)
 
             # control the play_robot in main function
