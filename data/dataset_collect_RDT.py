@@ -98,7 +98,7 @@ def record_loop():
 
 
 if __name__ == '__main__':
-    record_path = 'data/raw_test'
+    record_path = 'RDT_test'
     # if os.path.exists(record_path) and the directory is not empty, ask the user if they want to overwrite
     if os.path.exists(record_path) and os.listdir(record_path):
         cprint('Data already exists at {}'.format(record_path), 'red')
@@ -118,6 +118,17 @@ if __name__ == '__main__':
     else:
         print('Data will be saved to {}'.format(record_path))
     os.makedirs(record_path, exist_ok=True)
+
+    # Reset the RealSense cameras
+    ctx = rs.context()
+    devices = ctx.query_devices()
+    if not devices:
+        raise RuntimeError("No RealSense devices connected.")
+    for dev in devices:
+        serial = dev.get_info(rs.camera_info.serial_number)
+        print(f"Resetting camera: {serial}")
+        dev.hardware_reset()
+    time.sleep(5)
 
     # Initialize the realsense cameras
     pipeline_ex = rs.pipeline()
