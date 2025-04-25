@@ -122,14 +122,14 @@ if __name__ == '__main__':
     # Initialize the realsense cameras
     pipeline_ex = rs.pipeline()
     config_ex = rs.config()
-    config_ex.enable_device('12345678')
+    config_ex.enable_device('244622072764')
     config_ex.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
     config_ex.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     profile_ex = pipeline_ex.start(config_ex)
 
     pipeline_wrist = rs.pipeline()
     config_wrist = rs.config()
-    config_wrist.enable_device('87654321')
+    config_wrist.enable_device('207522077736')
     config_wrist.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     profile_wrist = pipeline_wrist.start(config_wrist)
 
@@ -171,7 +171,7 @@ if __name__ == '__main__':
     record_flag = False
     record_step = 0
     control_in_main = True
-    record_freq = 10
+    record_freq = 25
     record_time = 30
     record_steps_num = record_freq * record_time
     data = {
@@ -233,9 +233,9 @@ if __name__ == '__main__':
             # show the frames in the cv2 window
             depth_colormap_ex = cv2.applyColorMap(cv2.convertScaleAbs(depth_image_ex, alpha=0.03), cv2.COLORMAP_JET)
             text_info_canvas = np.zeros_like(color_image_wrist)
-            cv2.putText(text_info_canvas, f'Frequency: {record_freq}, Time: {record_time}', (200, 190))
-            cv2.putText(text_info_canvas, f'Episode: {record_episode}', (200, 290))
-            cv2.putText(text_info_canvas, f'Step: {record_step}/{record_steps_num}', (200, 390))
+            cv2.putText(text_info_canvas, f'Frequency: {record_freq}, Time: {record_time}', (200, 190), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(text_info_canvas, f'Episode: {record_episode}', (200, 290), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(text_info_canvas, f'Step: {record_step}/{record_steps_num}', (200, 390), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
             top_row = np.hstack((color_image_ex, depth_colormap_ex))
             bottom_row = np.hstack((color_image_wrist, text_info_canvas))
             image_show = np.vstack((top_row, bottom_row))
