@@ -45,9 +45,12 @@ def save_single_frame(record_dir, step_idx, color_image_e, depth_image_e, color_
     os.makedirs(depth_ex_dir, exist_ok=True)
     os.makedirs(rgb_wrist_dir, exist_ok=True)
 
-    imageio.imwrite(os.path.join(rgb_ex_dir, f"{step_idx:04d}.png"), color_image_e)
+    rgb_image_e = cv2.cvtColor(color_image_e, cv2.COLOR_BGR2RGB)
+    rgb_image_w = cv2.cvtColor(color_image_w, cv2.COLOR_BGR2RGB)
+
+    imageio.imwrite(os.path.join(rgb_ex_dir, f"{step_idx:04d}.png"), rgb_image_e)
     imageio.imwrite(os.path.join(depth_ex_dir, f"{step_idx:04d}.png"), depth_image_e)
-    imageio.imwrite(os.path.join(rgb_wrist_dir, f"{step_idx:04d}.png"), color_image_w)
+    imageio.imwrite(os.path.join(rgb_wrist_dir, f"{step_idx:04d}.png"), rgb_image_w)
 
 
 def record_loop():
