@@ -173,7 +173,7 @@ if __name__ == '__main__':
     record_steps_num = record_freq * record_time
 
     time.sleep(1)
-    print("Start----------")
+    print("Start---------------")
 
     cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
 
