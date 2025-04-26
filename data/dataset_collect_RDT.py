@@ -6,12 +6,14 @@ import numpy as np
 import cv2
 import sys
 import pickle
-import multiprocessing
 from termcolor import cprint
 import threading
 import queue
+import imageio
+import concurrent.futures
 
-def record_data(color_image_ex, depth_image_ex, color_image_wrist, play_robot, teacher_robot):
+
+def record_robot_data(play_robot, teacher_robot):
     '''The function is the main function of data reading and recording.'''
     global data, record_flag, record_step, record_steps_num, control_in_main
 
@@ -19,17 +21,8 @@ def record_data(color_image_ex, depth_image_ex, color_image_wrist, play_robot, t
     data['timestamp'][record_step] = time.time()
     data['robot_arm_joint'][record_step] = play_robot.get_current_joint_q()
     data['robot_gripper_joint'][record_step] = play_robot.get_current_end()
-    # data['robot_arm_joint_v'][record_step] = play_robot.get_current_joint_v()
-    # data['robot_end_effector_position'][record_step] = play_robot.get_current_translation()
-    # data['robot_end_effector_rotation'][record_step] = play_robot.get_current_rotation()
     data['teacher_arm_joint'][record_step] = teacher_robot.get_current_joint_q()
     data['teacher_gripper_joint'][record_step] = teacher_robot.get_current_end()
-    # data['teacher_arm_joint_v'][record_step] = teacher_robot.get_current_joint_v()
-    # data['teacher_end_effector_position'][record_step] = teacher_robot.get_current_translation()
-    # data['teacher_end_effector_rotation'][record_step] = teacher_robot.get_current_rotation()
-    data['color_image_ex'][record_step] = color_image_ex
-    data['depth_image_ex'][record_step] = depth_image_ex
-    data['color_image_wrist'][record_step] = color_image_wrist
 
     # control the play_robot
     play_robot.set_target_end(data['teacher_gripper_joint'][record_step], blocking=False)
@@ -43,40 +36,59 @@ def record_data(color_image_ex, depth_image_ex, color_image_wrist, play_robot, t
         record_step = 0
 
 
-def save_data(filename, data):
-    '''The function is used to save the data via pickle.'''
-    with open(filename, 'wb') as f:
-        pickle.dump(data, f)
-        print(f"Data saved to {filename}")
+def save_single_frame(record_dir, step_idx, color_image_e, depth_image_e, color_image_w):
+    rgb_ex_dir = os.path.join(record_dir, "rgb_ex")
+    depth_ex_dir = os.path.join(record_dir, "depth_ex")
+    rgb_wrist_dir = os.path.join(record_dir, "rgb_wrist")
+
+    os.makedirs(rgb_ex_dir, exist_ok=True)
+    os.makedirs(depth_ex_dir, exist_ok=True)
+    os.makedirs(rgb_wrist_dir, exist_ok=True)
+
+    imageio.imwrite(os.path.join(rgb_ex_dir, f"{step_idx:04d}.png"), color_image_e)
+    imageio.imwrite(os.path.join(depth_ex_dir, f"{step_idx:04d}.png"), depth_image_e)
+    imageio.imwrite(os.path.join(rgb_wrist_dir, f"{step_idx:04d}.png"), color_image_w)
 
 
 def record_loop():
-    '''The function is used to record the data periodically.'''
     global record_path, record_flag, record_freq, record_episode, record_step, play_robot, teacher_robot, data
-    period = 1.0 / record_freq
-    next_time = time.time()
 
-    while record_flag:
-        try:
-            color_image_e, depth_image_e, color_image_w = frame_queue.get(timeout=period)
-        except queue.Empty:
-            print(f"Warning: Frame queue is empty in step {record_step}")
-        record_data(color_image_e, depth_image_e, color_image_w, play_robot, teacher_robot)
-        next_time += period
-        sleep_duration = next_time - time.time()
+    # 初始化线程池
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        period = 1.0 / record_freq
+        next_time = time.time()
+        save_dir = os.path.join(record_path, f'ep{record_episode:03}')
+        while record_flag:
+            try:
+                color_image_e, depth_image_e, color_image_w = frame_queue.get(timeout=period)
+            except queue.Empty:
+                print(f"Warning: Frame queue is empty in step {record_step}")
 
-        if sleep_duration > 0:
-            time.sleep(sleep_duration)
-        else:
-            print(f"Warning: Processing slower than real-time in step {record_step}.")
-            next_time = time.time()  # reset time to avoid drift
+            # 使用线程池提交保存任务
+            executor.submit(save_single_frame, save_dir, record_step,
+                            color_image_e.copy(), depth_image_e.copy(), color_image_w.copy())
+            record_robot_data(play_robot, teacher_robot)
 
-    # record the data and add the episode
-    filename = os.path.join(record_path, f'ep{record_episode:02}.pkl')
-    # data_copy = copy.deepcopy(data)
-    data_saving = multiprocessing.Process(target=save_data, args=(filename, data))  # this step will take long time. so we run it in subprocess
-    data_saving.start()
+            next_time += period
+            sleep_duration = next_time - time.time()
 
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
+            else:
+                print(f"Warning: Processing slower than real-time in step {record_step}.")
+                next_time = time.time()  # reset time to avoid drift
+
+        # Save meta data in the main thread after recording finishes
+        meta_save_path = os.path.join(save_dir, 'meta.npz')
+        np.savez_compressed(meta_save_path,
+                            record_time=data['record_time'],
+                            record_freq=data['record_freq'],
+                            timestamp=np.array(data['timestamp']).reshape(-1, 1),
+                            robot_arm_joint=np.array(data['robot_arm_joint']),
+                            robot_gripper_joint=np.array(data['robot_gripper_joint']).reshape(-1, 1),
+                            teacher_arm_joint=np.array(data['teacher_arm_joint']),
+                            teacher_gripper_joint=np.array(data['teacher_gripper_joint']).reshape(-1, 1))
+        print(f"Meta data saved to {meta_save_path}")
 
 if __name__ == '__main__':
     record_path = 'RDT_test'
@@ -99,17 +111,6 @@ if __name__ == '__main__':
     else:
         print('Data will be saved to {}'.format(record_path))
     os.makedirs(record_path, exist_ok=True)
-
-    # Reset the RealSense cameras
-    ctx = rs.context()
-    devices = ctx.query_devices()
-    if not devices:
-        raise RuntimeError("No RealSense devices connected.")
-    for dev in devices:
-        serial = dev.get_info(rs.camera_info.serial_number)
-        print(f"Resetting camera: {serial} ...")
-        dev.hardware_reset()
-    time.sleep(3)
 
     # Set the record image parameters
     record_img_width = 640
@@ -168,18 +169,8 @@ if __name__ == '__main__':
     record_time = 30
     record_steps_num = record_freq * record_time
 
-    # store the record parameters
-    record_para = {
-        'record_freq': record_freq,
-        'record_time': record_time
-    }
-    filename = os.path.join(record_path, f'record_para.pkl')
-    with open(filename, 'wb') as f:
-        pickle.dump(record_para, f)
-        print(f"Record parameters have been saved to {filename}")
-
     time.sleep(1)
-    print("Start")
+    print("Start----------")
 
     cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
 
@@ -210,9 +201,9 @@ if __name__ == '__main__':
             # show the frames in the cv2 window
             depth_colormap_ex = cv2.applyColorMap(cv2.convertScaleAbs(depth_image_ex, alpha=0.03), cv2.COLORMAP_JET)
             text_info_canvas = np.zeros_like(color_image_wrist)
-            cv2.putText(text_info_canvas, f'Frequency: {record_freq}, Time: {record_time}', (200, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(text_info_canvas, f'Episode: {record_episode}', (200, 250), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(text_info_canvas, f'Step: {record_step}/{record_steps_num}', (200, 350), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(text_info_canvas, f'Frequency: {record_freq}, Time: {record_time}', (150, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(text_info_canvas, f'Episode: {record_episode}', (150, 250), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(text_info_canvas, f'Step: {record_step}/{record_steps_num}', (150, 350), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
             top_row = np.hstack((color_image_ex, depth_colormap_ex))
             bottom_row = np.hstack((color_image_wrist, text_info_canvas))
             image_show = np.vstack((top_row, bottom_row))
@@ -233,17 +224,13 @@ if __name__ == '__main__':
                     record_flag = True
                     record_episode += 1
                     data = {
+                        'record_freq': record_freq,
+                        'record_time': record_time,
                         'timestamp': [0.0] * record_steps_num,
                         'robot_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
                         'robot_gripper_joint': [0.0] * record_steps_num,
-                        # 'robot_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-                        # 'robot_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
-                        # 'robot_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
                         'teacher_arm_joint': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
                         'teacher_gripper_joint': [0.0] * record_steps_num,
-                        # 'teacher_arm_joint_v': [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * record_steps_num,
-                        # 'teacher_end_effector_position': [[0.0, 0.0, 0.0]] * record_steps_num,
-                        # 'teacher_end_effector_rotation': [[0.0, 0.0, 0.0, 0.0]] * record_steps_num,
                         'color_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width, 3]),
                         'depth_image_ex': np.zeros([record_steps_num, record_img_height, record_img_width]),
                         'color_image_wrist': np.zeros([record_steps_num, record_img_height, record_img_width, 3])
