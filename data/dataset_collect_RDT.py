@@ -259,19 +259,3 @@ if __name__ == '__main__':
         pipeline_ex.stop()
         pipeline_wrist.stop()
         print('End')
-
-
-# from huggingface_hub import hf_hub_download
-#
-# resolved_module_file = hf_hub_download(
-#     repo_id=pretrained_model_name_or_path,
-#     filename=module_file,
-#     cache_dir=cache_dir,
-#     force_download=force_download,
-#     proxies=proxies,
-#     resume_download=resume_download,
-#     local_files_only=local_files_only,
-#     token=token,
-#     revision=revision,
-# )
-# 11111
