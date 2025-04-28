@@ -141,6 +141,8 @@ def update_observation_window(config, bot_operator):
                 },
         }
     )
+    
+    return img_front
 
 
 # RDT inference
@@ -226,6 +228,8 @@ def model_inference(args, config, bot_operator):
         [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 0.0]
     )
     action = None
+    
+    cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
 
     # Inference loop
     with torch.inference_mode():
@@ -234,12 +238,14 @@ def model_inference(args, config, bot_operator):
         action_buffer = np.zeros([chunk_size, config['state_dim']])
         
         while t < max_publish_step:
+            # Check if the user pressed 'q' or 'Esc' to quit
             key = cv2.waitKey(1)
             if key & 0xFF == ord('q') or key == 27:
-                cv2.destroyAllWindows()
                 break
-            # Update observation window
-            update_observation_window(config, bot_operator)
+            
+            # Update observation window and show the image
+            image_to_show = update_observation_window(config, bot_operator)
+            cv2.imshow('RealSense', image_to_show)
             
             # When coming to the end of the action chunk
             if t % chunk_size == 0:
@@ -289,6 +295,7 @@ class AirbotOperator:
         self.airbot_vel = 0.08
         # self.init_ros()
         self.init_bot()
+        print("Airbot operator successfully initialized.")
 
     def playbot_publish(self, right):
         self.play_robot.set_target_end(right[-1], blocking=False)
@@ -305,7 +312,7 @@ class AirbotOperator:
         
         # Init Realsense Camera
         self.cam_high_pipeline = rs.pipeline()
-        cam_high_config = rs.config()
+        self.cam_high_config = rs.config()
         # cam_high_config.enable_stream(
         #     stream_type=rs.stream.depth, 
         #     width=640, 
@@ -313,25 +320,19 @@ class AirbotOperator:
         #     format=rs.format.z16,
         #     framerate=30
         # )
-        cam_high_config.enable_device('244622072764')
-        cam_high_config.enable_stream(
-            stream_type=rs.stream.color,
-            width=640,
-            height=480,
-            format=rs.format.bgr8,
-            framerate=30
-        )
-        cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
-
+        self.cam_high_config.enable_device('244622072764')
+        self.cam_high_config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
         # Start images streaming
-        profile = self.cam_high_pipeline.start(cam_high_config)
+        self.cam_high_profile = self.cam_high_pipeline.start(self.cam_high_config)
         # profile = pipeline.get_active_profile()
-        _ = profile.get_stream(rs.stream.color)
+        # _ = profile.get_stream(rs.stream.color)
         
     def end_process(self):
         if self.play_robot is not None:
             self.playbot_publish_continuous(RIGHT0)
             del self.play_robot
+            cv2.destroyAllWindows()
+            self.cam_high_pipeline.stop()
             print("Play robot successfully deleted.")
         else:
             print("No play robot to delete.")
