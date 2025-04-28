@@ -33,9 +33,16 @@ lang_embeddings = None
 # debug
 preload_images = None
 
+# Initial pose of the robot arm
+# TODO: Check the current init pose
+# left0 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, 3.557830810546875]
+RIGHT0 = [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 1.0]
+# left1 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, -0.3393220901489258]
+RIGHT1 = [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 0.0]
 
 # Initialize the model
 def make_policy(args):
+    print(f"Loading model from {args.pretrained_model_name_or_path}...")
     with open(args.config_path, "r") as fp:
         config = yaml.safe_load(fp)
     args.config = config
@@ -142,57 +149,56 @@ def inference_fn(config, policy, t):
     global lang_embeddings
     
     print(f"Start inference_thread_fn: t={t}")
-    while True:
-        time1 = time.time()     
+    time1 = time.time()     
 
-        # fetch images in sequence [front, right, left]
-        image_arrs = [
-            observation_window[-2]['images'][config['camera_names'][0]],
-            # observation_window[-2]['images'][config['camera_names'][1]],
-            # observation_window[-2]['images'][config['camera_names'][2]],
-            
-            observation_window[-1]['images'][config['camera_names'][0]]
-            # observation_window[-1]['images'][config['camera_names'][1]],
-            # observation_window[-1]['images'][config['camera_names'][2]]
-        ]
+    # fetch images in sequence [front, right, left]
+    image_arrs = [
+        observation_window[-2]['images'][config['camera_names'][0]],
+        # observation_window[-2]['images'][config['camera_names'][1]],
+        # observation_window[-2]['images'][config['camera_names'][2]],
         
-        # fetch debug images in sequence [front, right, left]
-        # image_arrs = [
-        #     preload_images[config['camera_names'][0]][max(t - 1, 0)],
-        #     preload_images[config['camera_names'][2]][max(t - 1, 0)],
-        #     preload_images[config['camera_names'][1]][max(t - 1, 0)],
-        #     preload_images[config['camera_names'][0]][t],
-        #     preload_images[config['camera_names'][2]][t],
-        #     preload_images[config['camera_names'][1]][t]
-        # ]
-        # # encode the images
-        # for i in range(len(image_arrs)):
-        #     image_arrs[i] = cv2.imdecode(np.frombuffer(image_arrs[i], np.uint8), cv2.IMREAD_COLOR)
-        # proprio = torch.from_numpy(preload_images['qpos'][t]).float().cuda()
-        
-        images = [PImage.fromarray(arr) if arr is not None else None
-                  for arr in image_arrs]
-        
-        # for i, pos in enumerate(['f', 'r', 'l'] * 2):
-        #     images[i].save(f'{t}-{i}-{pos}.png')
-        
-        # get last qpos in shape [7, ]
-        proprio = observation_window[-1]['qpos']
-        # unsqueeze to [1, 7]
-        proprio = proprio.unsqueeze(0)
-        
-        # actions shaped as [1, 64, 14] in format [left, right]
-        actions = policy.step(
-            proprio=proprio,
-            images=images,
-            text_embeds=lang_embeddings 
-        ).squeeze(0).cpu().numpy()
-        # print(f"inference_actions: {actions.squeeze()}")
-        
-        print(f"Model inference time: {time.time() - time1} s")
-        
-        # print(f"Finish inference_thread_fn: t={t}")
-        return actions
+        observation_window[-1]['images'][config['camera_names'][0]]
+        # observation_window[-1]['images'][config['camera_names'][1]],
+        # observation_window[-1]['images'][config['camera_names'][2]]
+    ]
+    
+    # fetch debug images in sequence [front, right, left]
+    # image_arrs = [
+    #     preload_images[config['camera_names'][0]][max(t - 1, 0)],
+    #     preload_images[config['camera_names'][2]][max(t - 1, 0)],
+    #     preload_images[config['camera_names'][1]][max(t - 1, 0)],
+    #     preload_images[config['camera_names'][0]][t],
+    #     preload_images[config['camera_names'][2]][t],
+    #     preload_images[config['camera_names'][1]][t]
+    # ]
+    # # encode the images
+    # for i in range(len(image_arrs)):
+    #     image_arrs[i] = cv2.imdecode(np.frombuffer(image_arrs[i], np.uint8), cv2.IMREAD_COLOR)
+    # proprio = torch.from_numpy(preload_images['qpos'][t]).float().cuda()
+    
+    images = [PImage.fromarray(arr) if arr is not None else None
+                for arr in image_arrs]
+    
+    # for i, pos in enumerate(['f', 'r', 'l'] * 2):
+    #     images[i].save(f'{t}-{i}-{pos}.png')
+    
+    # get last qpos in shape [7, ]
+    proprio = observation_window[-1]['qpos']
+    # unsqueeze to [1, 7]
+    proprio = proprio.unsqueeze(0)
+    
+    # actions shaped as [1, 64, 14] in format [left, right]
+    actions = policy.step(
+        proprio=proprio,
+        images=images,
+        text_embeds=lang_embeddings 
+    ).squeeze(0).cpu().numpy()
+    # print(f"inference_actions: {actions.squeeze()}")
+    
+    print(f"Model inference time: {time.time() - time1} s")
+    
+    # print(f"Finish inference_thread_fn: t={t}")
+    return actions
 
 
 # Main loop for the manipulation task
@@ -209,17 +215,10 @@ def model_inference(args, config, bot_operator):
     
     max_publish_step = config['episode_len']
     chunk_size = config['chunk_size']
-
-    # TODO: check the initial pose of our robot arm
-    # Initialize position of the puppet arm
-    # left0 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, 3.557830810546875]
-    right0 = [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 1.0]
-    # left1 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, -0.3393220901489258]
-    right1 = [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 0.0]
     
-    bot_operator.playbot_publish_continuous(right0)
-    input("Press enter to continue")
-    bot_operator.playbot_publish_continuous(right1)
+    bot_operator.playbot_publish_continuous(RIGHT0)
+    input("Press enter to continue...")
+    bot_operator.playbot_publish_continuous(RIGHT1)
 
     # Initialize the previous action to be the initial robot state
     pre_action = np.zeros(config['state_dim'])
@@ -230,91 +229,66 @@ def model_inference(args, config, bot_operator):
 
     # Inference loop
     with torch.inference_mode():
-        while True:
-            # The current time step
-            t = 0
-            # rate = rospy.Rate(args.publish_rate)
-    
-            action_buffer = np.zeros([chunk_size, config['state_dim']])
+        # The current time step
+        t = 0
+        action_buffer = np.zeros([chunk_size, config['state_dim']])
+        
+        while t < max_publish_step:
+            key = cv2.waitKey(1)
+            if key & 0xFF == ord('q') or key == 27:
+                cv2.destroyAllWindows()
+                break
+            # Update observation window
+            update_observation_window(config, bot_operator)
             
-            while t < max_publish_step:
-                # Update observation window
-                # TODO: mark
-                update_observation_window(config, bot_operator)
+            # When coming to the end of the action chunk
+            if t % chunk_size == 0:
+                # Start inference
+                action_buffer = inference_fn(config, policy, t).copy()
+            
+            raw_action = action_buffer[t % chunk_size]
+            action = raw_action
+            # Interpolate the original action sequence
+            if args.use_actions_interpolation:
+                # print(f"Time {t}, pre {pre_action}, act {action}")
+                interp_actions = interpolate_action(args, pre_action, action)
+            else:
+                interp_actions = action[np.newaxis, :]
+            # Execute the interpolated actions one by one
+            for act in interp_actions:
+                ctrl_freq = args.ctrl_freq
+                interval = 1.0 / ctrl_freq
+
+                start_time = time.time()
+
+                right_action = act[:7]
+                # right_action = act[7:14]
+                if not args.disable_puppet_arm:
+                    bot_operator.playbot_publish(right_action)
                 
-                # When coming to the end of the action chunk
-                if t % chunk_size == 0:
-                    # Start inference
-                    action_buffer = inference_fn(config, policy, t).copy()
-                
-                raw_action = action_buffer[t % chunk_size]
-                action = raw_action
-                # Interpolate the original action sequence
-                if args.use_actions_interpolation:
-                    # print(f"Time {t}, pre {pre_action}, act {action}")
-                    interp_actions = interpolate_action(args, pre_action, action)
+                elapsed = time.time() - start_time
+                sleep_time = interval - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 else:
-                    interp_actions = action[np.newaxis, :]
-                # Execute the interpolated actions one by one
-                for act in interp_actions:
-                    ctrl_freq = args.ctrl_freq
-                    interval = 1.0 / ctrl_freq
-
-                    start_time = time.time()
-
-                    right_action = act[:7]
-                    # right_action = act[7:14]
-                    if not args.disable_puppet_arm:
-                        bot_operator.playbot_publish(right_action)
-                    
-                    elapsed = time.time() - start_time
-                    sleep_time = interval - elapsed
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
-                    else:
-                        print(f"[Warning] Loop overran. Elapsed time: {elapsed:.2f}s, ")
-                t += 1
-                
-                print("Published Step", t)
-                pre_action = action.copy()
+                    print(f"[Warning] Loop overran. Elapsed time: {elapsed:.2f}s.")
+            t += 1
+            
+            print("Published Step: ", t)
+            pre_action = action.copy()
+    
+    print("Loop finished or quitted.")
+    input("Press enter to continue...")        
+    bot_operator.end_process()
+    print("Robot stopped.")
 
 
-# ROS operator class
+# Airbot operator class
 class AirbotOperator:
-    def __init__(self, args):
-        self.robot_base_deque = None
-        self.puppet_arm_right_deque = None
-        self.puppet_arm_left_deque = None
-        self.img_front_deque = None
-        self.img_right_deque = None
-        self.img_left_deque = None
-        self.img_front_depth_deque = None
-        self.img_right_depth_deque = None
-        self.img_left_depth_deque = None
-        self.bridge = None
-        self.puppet_arm_left_publisher = None
-        self.puppet_arm_right_publisher = None
-        self.robot_base_publisher = None
-        self.puppet_arm_publish_thread = None
-        self.puppet_arm_publish_lock = None
-        self.args = args
+    def __init__(self):
         self.airbot_vel = 0.08
-        self.init()
         # self.init_ros()
         self.init_bot()
-
-    def init(self):
-        self.img_left_deque = deque()
-        self.img_right_deque = deque()
-        self.img_front_deque = deque()
-        self.img_left_depth_deque = deque()
-        self.img_right_depth_deque = deque()
-        self.img_front_depth_deque = deque()
-        self.puppet_arm_left_deque = deque()
-        self.puppet_arm_right_deque = deque()
-        self.robot_base_deque = deque()
-        self.puppet_arm_publish_lock = threading.Lock()
-        self.puppet_arm_publish_lock.acquire()
 
     def playbot_publish(self, right):
         self.play_robot.set_target_end(right[-1], blocking=False)
@@ -323,15 +297,11 @@ class AirbotOperator:
     def playbot_publish_continuous(self, right):
         self.play_robot.set_target_end(right[-1], blocking=False)
         self.play_robot.set_target_pose([right[:3], right[3:7]], use_planning=True, blocking=False, vel=self.airbot_vel)
+        time.sleep(4)
 
     def init_bot(self):
         self.play_robot = airbot.create_agent(can_interface="can1", end_mode="gripper")
         self.teacher_robot = None
-
-        self.joint_limits = {
-                    'lower_bounds': np.array([-177, -167, -2, -145, -97, -176]),
-                    'upper_bounds': np.array([117, 7, 177, 145, 97, 176])
-                }
         
         # Init Realsense Camera
         self.cam_high_pipeline = rs.pipeline()
@@ -343,6 +313,7 @@ class AirbotOperator:
         #     format=rs.format.z16,
         #     framerate=30
         # )
+        cam_high_config.enable_device('244622072764')
         cam_high_config.enable_stream(
             stream_type=rs.stream.color,
             width=640,
@@ -354,11 +325,17 @@ class AirbotOperator:
 
         # Start images streaming
         profile = self.cam_high_pipeline.start(cam_high_config)
-        device = profile.get_device()
-        device.hardware_reset()
         # profile = pipeline.get_active_profile()
         _ = profile.get_stream(rs.stream.color)
-
+        
+    def end_process(self):
+        if self.play_robot is not None:
+            self.playbot_publish_continuous(RIGHT0)
+            del self.play_robot
+            print("Play robot successfully deleted.")
+        else:
+            print("No play robot to delete.")
+            return
 
 def get_arguments():
     parser = argparse.ArgumentParser()
@@ -381,25 +358,6 @@ def get_arguments():
     parser.add_argument('--img_right_depth_topic', action='store', type=str, help='img_right_depth_topic',
                         default='/camera_r/depth/image_raw', required=False)
     
-    parser.add_argument('--puppet_arm_left_cmd_topic', action='store', type=str, help='puppet_arm_left_cmd_topic',
-                        default='/master/joint_left', required=False)
-    parser.add_argument('--puppet_arm_right_cmd_topic', action='store', type=str, help='puppet_arm_right_cmd_topic',
-                        default='/master/joint_right', required=False)
-    parser.add_argument('--puppet_arm_left_topic', action='store', type=str, help='puppet_arm_left_topic',
-                        default='/puppet/joint_left', required=False)
-    parser.add_argument('--puppet_arm_right_topic', action='store', type=str, help='puppet_arm_right_topic',
-                        default='/puppet/joint_right', required=False)
-    
-    parser.add_argument('--robot_base_topic', action='store', type=str, help='robot_base_topic',
-                        default='/odom_raw', required=False)
-    parser.add_argument('--robot_base_cmd_topic', action='store', type=str, help='robot_base_topic',
-                        default='/cmd_vel', required=False)
-    parser.add_argument('--use_robot_base', action='store_true', 
-                        help='Whether to use the robot base to move around',
-                        default=False, required=False)
-    parser.add_argument('--publish_rate', action='store', type=int, 
-                        help='The rate at which to publish the actions',
-                        default=30, required=False)
     parser.add_argument('--ctrl_freq', action='store', type=int, 
                         help='The control frequency of the robot',
                         default=25, required=False)
@@ -437,12 +395,15 @@ def get_arguments():
 
 def main():
     args = get_arguments()
-    ros_operator = AirbotOperator(args)
+    bot_operator = AirbotOperator()
     if args.seed is not None:
         set_seed(args.seed)
     config = get_config(args)
-    model_inference(args, config, ros_operator)
-    print("Loop finished.")
+    try:
+        model_inference(args, config, bot_operator)
+    except Exception as e:
+        print(f"Exception occurred during model inference: {e}")
+        bot_operator.end_process()
 
 
 if __name__ == '__main__':
