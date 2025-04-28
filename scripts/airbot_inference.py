@@ -89,8 +89,10 @@ def get_config(args):
 
 
 # Update the observation window buffer
-def update_observation_window(config, play_robot, cam_high_pipeline):
+def update_observation_window(config, play_robot):
+    global cam_high_pipeline
     global observation_window
+    
     if observation_window is None:
         observation_window = deque(maxlen=2)
     
@@ -196,8 +198,9 @@ def inference_fn(config, policy, t):
 
 
 # Main loop for the manipulation task
-def model_inference(args, config, play_robot, cam_high_pipeline):
+def model_inference(args, config, play_robot):
     global lang_embeddings
+    global cam_high_pipeline
     
     # Load rdt model
     policy = make_policy(args)
@@ -240,7 +243,7 @@ def model_inference(args, config, play_robot, cam_high_pipeline):
                 break
             
             # Update observation window and show the image
-            image_to_show = update_observation_window(config, play_robot, cam_high_pipeline)
+            image_to_show = update_observation_window(config, play_robot)
             cv2.imshow('RealSense', image_to_show)
             
             # When coming to the end of the action chunk
@@ -347,6 +350,8 @@ def get_arguments():
 
 
 def main():
+    global cam_high_pipeline
+    
     args = get_arguments()
     
     # Initialize the bot
@@ -370,7 +375,7 @@ def main():
     
     try:
         ###### Main Loop of the Task ######
-        model_inference(args, config, play_robot, cam_high_pipeline)
+        model_inference(args, config, play_robot)
         ###### End of the Task Loop ######
     except Exception as e:
         print(f"Exception occurred during model inference: {e}")
