@@ -177,8 +177,8 @@ class HDF5VLADataset:
                     task_type = "blue_duck"
                 elif task_name == "pack_duck_pink":
                     task_type = "pink_duck"
-                instruction_type = np.random.choice(['ins', 'sim_ins', 'exp_ins'])
-                instruction = os.path.join(task_path, "lang_embed", task_type, f"{instruction_type}.pt")
+                instruction_type = np.random.choice([0, 1, 2])
+                instruction = os.path.join(task_path, "lang_embed", task_type, f"lang_embed_{str(instruction_type)}.pt")
                 if not os.path.exists(instruction):
                     raise FileNotFoundError(f"Instruction file not found: {instruction}")
 
