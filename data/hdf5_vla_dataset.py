@@ -147,6 +147,44 @@ class HDF5VLADataset:
             # We randomly sample a timestep
             step_id = np.random.randint(first_idx-1, num_steps)
 
+            def get_instruction(file_path):
+                ep_name = os.path.basename(file_path)
+                ep_num = int(ep_name[2:])
+                task_path = os.path.dirname(file_path)
+                task_name = os.path.basename(task_path)
+                if task_name == "catch_redbird":
+                    if 0 <= ep_num <= 24 or 50 <= ep_num <= 74:
+                        task_type = "green_box"
+                    elif 25 <= ep_num <= 49 or 75 <= ep_num <= 99:
+                        task_type = "grey_box"
+                elif task_name == "catch_cup":
+                    if 0 <= ep_num <= 24 or 50 <= ep_num <= 74:
+                        task_type = "green_box"
+                    elif 25 <= ep_num <= 49 or 75 <= ep_num <= 99:
+                        task_type = "grey_box"
+                elif task_name == "pour_water":
+                    task_type = "pour_water"
+                elif task_name == "mouse_moving":
+                    if 0 <= ep_num <= 14:
+                        task_type = "forward"
+                    elif 15 <= ep_num <= 29:
+                        task_type = "backward"
+                    elif 30 <= ep_num <= 44:
+                        task_type = "right"
+                    elif 45 <= ep_num <= 59:
+                        task_type = "left"
+                elif task_name == "pack_duck":
+                    task_type = "blue_duck"
+                elif task_name == "pack_duck_pink":
+                    task_type = "pink_duck"
+                instruction_type = np.random.choice(['ins', 'sim_ins', 'exp_ins'])
+                instruction = os.path.join(task_path, "lang_embed", task_type, f"{instruction_type}.pt")
+                if not os.path.exists(instruction):
+                    raise FileNotFoundError(f"Instruction file not found: {instruction}")
+
+                return instruction
+
+
             # Load the instruction
             # dir_path = os.path.dirname(file_path)
             # with open(os.path.join(dir_path, 'expanded_instruction_gpt-4-turbo.json'), 'r') as f_instr:
@@ -160,10 +198,7 @@ class HDF5VLADataset:
             # if isinstance(instruction, list):
             #     instruction = np.random.choice(instruction)
             # You can also use precomputed language embeddings (recommended)
-            instruction_type = np.random.choice([0, 1, 2])
-            instruction = f"data/datasets/redbird50_0325/lang_embed_{str(instruction_type)}.pt"
-            if not os.path.exists(instruction):
-                raise FileNotFoundError(f"Instruction file not found: {instruction}")
+            instruction = get_instruction(file_path)
             
             # Assemble the meta
             meta = {
