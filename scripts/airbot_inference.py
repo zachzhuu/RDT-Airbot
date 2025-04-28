@@ -5,11 +5,11 @@
 """
 
 import argparse
-import sys
-import threading
 import time
 import yaml
 from collections import deque
+import traceback
+import copy
 
 import numpy as np
 # import rospy
@@ -36,9 +36,9 @@ preload_images = None
 # Initial pose of the robot arm
 # TODO: Check the current init pose
 # left0 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, 3.557830810546875]
-RIGHT0 = [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 1.0]
+RIGHT0 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 # left1 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, -0.3393220901489258]
-RIGHT1 = [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 0.0]
+RIGHT1 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]
 
 # Initialize the model
 def make_policy(args):
@@ -86,30 +86,10 @@ def get_config(args):
         'camera_names': CAMERA_NAMES,
     }
     return config
-    
-
-def get_bot_observation(bot_operator):
-    assert isinstance(bot_operator, AirbotOperator)
-    # Get proprioceptive data
-    q = bot_operator.play_robot.get_current_joint_q()
-    eef = bot_operator.play_robot.get_current_end()
-    eef = 0.0 if eef < 0.05 else 1.0 if eef > 0.95 else eef
-    qpos = q + [eef]
-    qpos = np.array(qpos)
-
-    # Get image data
-    frames = bot_operator.cam_high_pipeline.wait_for_frames()
-    color_frame = frames.get_color_frame()
-    if not color_frame:
-        return
-    color_image = np.asanyarray(color_frame.get_data())
-    color_image = color_image.astype(np.uint8)  # color format aligned with training
-
-    return (color_image, qpos)
 
 
 # Update the observation window buffer
-def update_observation_window(config, bot_operator):
+def update_observation_window(config, play_robot, cam_high_pipeline):
     global observation_window
     if observation_window is None:
         observation_window = deque(maxlen=2)
@@ -127,12 +107,24 @@ def update_observation_window(config, bot_operator):
             }
         )
     
-    img_front, puppet_arm_right = get_bot_observation(bot_operator)
+    # Get proprioceptive data
+    q = play_robot.get_current_joint_q()
+    eef = play_robot.get_current_end()
+    eef = 0.0 if eef < 0.05 else 1.0 if eef > 0.95 else eef
+    qpos = q + [eef]
+    puppet_arm_right = torch.tensor(qpos, dtype=torch.float).cuda()
+
+    # Get image data
+    frames = cam_high_pipeline.wait_for_frames()
+    color_frame = frames.get_color_frame()
+    if not color_frame:
+        return
+    color_image = np.asanyarray(color_frame.get_data())
+    img_front = color_image.astype(np.uint8)  # color format aligned with training
     
-    qpos = torch.from_numpy(puppet_arm_right).float().cuda()
     observation_window.append(
         {
-            'qpos': qpos,
+            'qpos': puppet_arm_right,
             'images':
                 {
                     config["camera_names"][0]: img_front,
@@ -204,28 +196,32 @@ def inference_fn(config, policy, t):
 
 
 # Main loop for the manipulation task
-def model_inference(args, config, bot_operator):
+def model_inference(args, config, play_robot, cam_high_pipeline):
     global lang_embeddings
-
-    assert isinstance(bot_operator, AirbotOperator)
+    
     # Load rdt model
     policy = make_policy(args)
     
     lang_dict = torch.load(args.lang_embeddings_path)
-    print(f"Running with instruction: \"{lang_dict['instruction']}\" from \"{lang_dict['name']}\"")
-    lang_embeddings = lang_dict["embeddings"]
+    print(f"Loaded language embeddings from {args.lang_embeddings_path}")
+    # print(f"Running with instruction: \"{lang_dict['instruction']}\" from \"{lang_dict['name']}\"")
+    lang_embeddings = lang_dict  # ["embeddings"]
     
     max_publish_step = config['episode_len']
     chunk_size = config['chunk_size']
     
-    bot_operator.playbot_publish_continuous(RIGHT0)
-    input("Press enter to continue...")
-    bot_operator.playbot_publish_continuous(RIGHT1)
+    # Back to the initial position
+    play_robot.set_target_end(RIGHT1[-1], blocking=False)
+    play_robot.set_target_joint_q(RIGHT1[:6], use_planning=False, blocking=False)
+    input("Press enter to the initial pose...")
+    play_robot.set_target_end(RIGHT0[-1], blocking=False)
+    play_robot.set_target_joint_q(RIGHT0[:6], use_planning=False, blocking=False)
+    input("Press enter to start the task...")
 
     # Initialize the previous action to be the initial robot state
     pre_action = np.zeros(config['state_dim'])
     pre_action[:7] = np.array(
-        [0.32948363, -0.10769133, 0.18022917, -0.17248239, 0.5107854, 0.2793215, 0.79456127, 0.0]
+        copy.deepcopy(RIGHT0)
     )
     action = None
     
@@ -244,7 +240,7 @@ def model_inference(args, config, bot_operator):
                 break
             
             # Update observation window and show the image
-            image_to_show = update_observation_window(config, bot_operator)
+            image_to_show = update_observation_window(config, play_robot, cam_high_pipeline)
             cv2.imshow('RealSense', image_to_show)
             
             # When coming to the end of the action chunk
@@ -267,10 +263,11 @@ def model_inference(args, config, bot_operator):
 
                 start_time = time.time()
 
-                right_action = act[:7]
+                right_action = act[:7].tolist()
                 # right_action = act[7:14]
                 if not args.disable_puppet_arm:
-                    bot_operator.playbot_publish(right_action)
+                    play_robot.set_target_end(right_action[-1], blocking=False)
+                    play_robot.set_target_joint_q(right_action[:6], use_planning=False, blocking=False)
                 
                 elapsed = time.time() - start_time
                 sleep_time = interval - elapsed
@@ -284,59 +281,14 @@ def model_inference(args, config, bot_operator):
             pre_action = action.copy()
     
     print("Loop finished or quitted.")
-    input("Press enter to continue...")        
-    bot_operator.end_process()
-    print("Robot stopped.")
+    input("Press enter to delete robot...")
+    play_robot.set_target_end(RIGHT0[-1], blocking=False)
+    play_robot.set_target_joint_q(RIGHT0[:6], use_planning=False, blocking=False)   
+    del play_robot
+    cv2.destroyAllWindows()
+    cam_high_pipeline.stop()
+    print("Play robot successfully deleted.")
 
-
-# Airbot operator class
-class AirbotOperator:
-    def __init__(self):
-        self.airbot_vel = 0.08
-        # self.init_ros()
-        self.init_bot()
-        print("Airbot operator successfully initialized.")
-
-    def playbot_publish(self, right):
-        self.play_robot.set_target_end(right[-1], blocking=False)
-        self.play_robot.set_target_pose([right[:3], right[3:7]], use_planning=False, blocking=False, vel=self.airbot_vel)
-
-    def playbot_publish_continuous(self, right):
-        self.play_robot.set_target_end(right[-1], blocking=False)
-        self.play_robot.set_target_pose([right[:3], right[3:7]], use_planning=True, blocking=False, vel=self.airbot_vel)
-        time.sleep(4)
-
-    def init_bot(self):
-        self.play_robot = airbot.create_agent(can_interface="can1", end_mode="gripper")
-        self.teacher_robot = None
-        
-        # Init Realsense Camera
-        self.cam_high_pipeline = rs.pipeline()
-        self.cam_high_config = rs.config()
-        # cam_high_config.enable_stream(
-        #     stream_type=rs.stream.depth, 
-        #     width=640, 
-        #     height=480, 
-        #     format=rs.format.z16,
-        #     framerate=30
-        # )
-        self.cam_high_config.enable_device('244622072764')
-        self.cam_high_config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-        # Start images streaming
-        self.cam_high_profile = self.cam_high_pipeline.start(self.cam_high_config)
-        # profile = pipeline.get_active_profile()
-        # _ = profile.get_stream(rs.stream.color)
-        
-    def end_process(self):
-        if self.play_robot is not None:
-            self.playbot_publish_continuous(RIGHT0)
-            del self.play_robot
-            cv2.destroyAllWindows()
-            self.cam_high_pipeline.stop()
-            print("Play robot successfully deleted.")
-        else:
-            print("No play robot to delete.")
-            return
 
 def get_arguments():
     parser = argparse.ArgumentParser()
@@ -396,15 +348,38 @@ def get_arguments():
 
 def main():
     args = get_arguments()
-    bot_operator = AirbotOperator()
+    
+    # Initialize the bot
+    play_robot = airbot.create_agent(can_interface="can1", end_mode="gripper")
+    teacher_robot = None
+    
+    # Init Realsense Camera
+    cam_high_pipeline = rs.pipeline()
+    cam_high_config = rs.config()
+    cam_high_config.enable_device('244622072764')
+    cam_high_config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    # Start images streaming
+    cam_high_profile = cam_high_pipeline.start(cam_high_config)
+    # profile = pipeline.get_active_profile()
+    # _ = profile.get_stream(rs.stream.color)
+    print("Airbot operator and cameras successfully initialized.")
+
     if args.seed is not None:
         set_seed(args.seed)
     config = get_config(args)
+    
     try:
-        model_inference(args, config, bot_operator)
+        ###### Main Loop of the Task ######
+        model_inference(args, config, play_robot, cam_high_pipeline)
+        ###### End of the Task Loop ######
     except Exception as e:
         print(f"Exception occurred during model inference: {e}")
-        bot_operator.end_process()
+        play_robot.set_target_end(RIGHT0[-1], blocking=False)
+        play_robot.set_target_joint_q(RIGHT0[:6], use_planning=False, blocking=False)   
+        del play_robot
+        cv2.destroyAllWindows()
+        cam_high_pipeline.stop()
+        traceback.print_exc()
 
 
 if __name__ == '__main__':
