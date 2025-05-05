@@ -15,7 +15,6 @@ import numpy as np
 # import rospy
 import torch
 from PIL import Image as PImage
-import cv2
 import airbot
 import pyrealsense2 as rs
 
@@ -24,7 +23,10 @@ from scripts.airbot_model import create_model
 
 # sys.path.append("./")
 
-CAMERA_NAMES = ['cam_high']  # , 'cam_right_wrist', 'cam_left_wrist'
+CAMERA_NAMES = ['cam_high', 'cam_right_wrist']  # , 'cam_left_wrist'
+# Initialize the realsense cameras
+record_img_width = 640
+record_img_height = 480
 
 observation_window = None
 
@@ -34,11 +36,8 @@ lang_embeddings = None
 preload_images = None
 
 # Initial pose of the robot arm
-# TODO: Check the current init pose
-# left0 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, 3.557830810546875]
-RIGHT0 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-# left1 = [-0.00133514404296875, 0.00209808349609375, 0.01583099365234375, -0.032616615295410156, -0.00286102294921875, 0.00095367431640625, -0.3393220901489258]
-RIGHT1 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]
+right0 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+right1 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]
 
 # Initialize the model
 def make_policy(args):
@@ -89,13 +88,14 @@ def get_config(args):
 
 
 # Update the observation window buffer
-def update_observation_window(config, play_robot):
-    global cam_high_pipeline
+def update_observation_window(config, robot):
     global observation_window
+    global pipeline_front
+    global pipeline_right
     
     if observation_window is None:
         observation_window = deque(maxlen=2)
-    
+
         # Append the first dummy image
         observation_window.append(
             {
@@ -103,40 +103,39 @@ def update_observation_window(config, play_robot):
                 'images':
                     {
                         config["camera_names"][0]: None,
-                        # config["camera_names"][1]: None,
-                        # config["camera_names"][2]: None,
+                        config["camera_names"][1]: None
                     },
             }
         )
+
+    # Get images
+    frames_front = pipeline_front.wait_for_frames()
+    frames_right = pipeline_right.wait_for_frames()
+    color_frame_front = frames_front.get_color_frame()
+    color_frame_right = frames_right.get_color_frame()
     
-    # Get proprioceptive data
-    q = play_robot.get_current_joint_q()
-    eef = play_robot.get_current_end()
+    if not color_frame_front or not color_frame_right:
+        return
+    img_front = np.asanyarray(color_frame_front.get_data())
+    img_right = np.asanyarray(color_frame_right.get_data())
+    
+    # Get robot state
+    q = robot.get_current_joint_q()
+    eef = robot.get_current_end()
     eef = 0.0 if eef < 0.05 else 1.0 if eef > 0.95 else eef
     qpos = q + [eef]
-    puppet_arm_right = torch.tensor(qpos, dtype=torch.float).cuda()
-
-    # Get image data
-    frames = cam_high_pipeline.wait_for_frames()
-    color_frame = frames.get_color_frame()
-    if not color_frame:
-        return
-    color_image = np.asanyarray(color_frame.get_data())
-    img_front = color_image.astype(np.uint8)  # color format aligned with training
+    qpos = torch.tensor(qpos, dtype=torch.float).cuda()
     
     observation_window.append(
         {
-            'qpos': puppet_arm_right,
+            'qpos': qpos,
             'images':
                 {
                     config["camera_names"][0]: img_front,
-                    # config["camera_names"][1]: img_right,
-                    # config["camera_names"][2]: img_left,
+                    config["camera_names"][1]: img_right
                 },
         }
     )
-    
-    return img_front
 
 
 # RDT inference
@@ -144,46 +143,29 @@ def inference_fn(config, policy, t):
     global observation_window
     global lang_embeddings
     
-    print(f"Start inference_thread_fn: t={t}")
+    print(f"Start inference: t={t}")
     time1 = time.time()     
 
     # fetch images in sequence [front, right, left]
     image_arrs = [
         observation_window[-2]['images'][config['camera_names'][0]],
-        # observation_window[-2]['images'][config['camera_names'][1]],
+        observation_window[-2]['images'][config['camera_names'][1]],
         # observation_window[-2]['images'][config['camera_names'][2]],
         
-        observation_window[-1]['images'][config['camera_names'][0]]
-        # observation_window[-1]['images'][config['camera_names'][1]],
+        observation_window[-1]['images'][config['camera_names'][0]],
+        observation_window[-1]['images'][config['camera_names'][1]]
         # observation_window[-1]['images'][config['camera_names'][2]]
     ]
     
-    # fetch debug images in sequence [front, right, left]
-    # image_arrs = [
-    #     preload_images[config['camera_names'][0]][max(t - 1, 0)],
-    #     preload_images[config['camera_names'][2]][max(t - 1, 0)],
-    #     preload_images[config['camera_names'][1]][max(t - 1, 0)],
-    #     preload_images[config['camera_names'][0]][t],
-    #     preload_images[config['camera_names'][2]][t],
-    #     preload_images[config['camera_names'][1]][t]
-    # ]
-    # # encode the images
-    # for i in range(len(image_arrs)):
-    #     image_arrs[i] = cv2.imdecode(np.frombuffer(image_arrs[i], np.uint8), cv2.IMREAD_COLOR)
-    # proprio = torch.from_numpy(preload_images['qpos'][t]).float().cuda()
-    
     images = [PImage.fromarray(arr) if arr is not None else None
                 for arr in image_arrs]
-    
-    # for i, pos in enumerate(['f', 'r', 'l'] * 2):
-    #     images[i].save(f'{t}-{i}-{pos}.png')
     
     # get last qpos in shape [7, ]
     proprio = observation_window[-1]['qpos']
     # unsqueeze to [1, 7]
     proprio = proprio.unsqueeze(0)
     
-    # actions shaped as [1, 64, 14] in format [left, right]
+    # actions shaped as [1, 64, 7]
     actions = policy.step(
         proprio=proprio,
         images=images,
@@ -200,7 +182,6 @@ def inference_fn(config, policy, t):
 # Main loop for the manipulation task
 def model_inference(args, config, play_robot):
     global lang_embeddings
-    global cam_high_pipeline
     
     # Load rdt model
     policy = make_policy(args)
@@ -214,21 +195,21 @@ def model_inference(args, config, play_robot):
     chunk_size = config['chunk_size']
     
     # Back to the initial position
-    play_robot.set_target_end(RIGHT1[-1], blocking=False)
-    play_robot.set_target_joint_q(RIGHT1[:6], use_planning=False, blocking=False)
+    play_robot.set_target_end(right1[-1], blocking=False)
+    play_robot.set_target_joint_q(right1[:6], use_planning=False, blocking=False)
     input("Press enter to the initial pose...")
-    play_robot.set_target_end(RIGHT0[-1], blocking=False)
-    play_robot.set_target_joint_q(RIGHT0[:6], use_planning=False, blocking=False)
+    play_robot.set_target_end(right0[-1], blocking=False)
+    play_robot.set_target_joint_q(right0[:6], use_planning=False, blocking=False)
     input("Press enter to start the task...")
 
     # Initialize the previous action to be the initial robot state
     pre_action = np.zeros(config['state_dim'])
     pre_action[:7] = np.array(
-        copy.deepcopy(RIGHT0)
+        copy.deepcopy(right0)
     )
     action = None
     
-    cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
+    # cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
 
     # Inference loop
     with torch.inference_mode():
@@ -236,15 +217,13 @@ def model_inference(args, config, play_robot):
         t = 0
         action_buffer = np.zeros([chunk_size, config['state_dim']])
         
+        print("Start the inference loop...")
         while t < max_publish_step:
-            # Check if the user pressed 'q' or 'Esc' to quit
-            key = cv2.waitKey(1)
-            if key & 0xFF == ord('q') or key == 27:
-                break
-            
-            # Update observation window and show the image
-            image_to_show = update_observation_window(config, play_robot)
-            cv2.imshow('RealSense', image_to_show)
+            # TODO: add a key interruption w/o cv2
+            # Update observation window
+            update_observation_window(config, play_robot)
+            # image_to_show = update_observation_window(config, play_robot)
+            # cv2.imshow('RealSense', image_to_show)
             
             # When coming to the end of the action chunk
             if t % chunk_size == 0:
@@ -252,13 +231,12 @@ def model_inference(args, config, play_robot):
                 action_buffer = inference_fn(config, policy, t).copy()
             
             raw_action = action_buffer[t % chunk_size]
-            action = raw_action
             # Interpolate the original action sequence
             if args.use_actions_interpolation:
                 # print(f"Time {t}, pre {pre_action}, act {action}")
-                interp_actions = interpolate_action(args, pre_action, action)
+                interp_actions = interpolate_action(args, pre_action, raw_action)
             else:
-                interp_actions = action[np.newaxis, :]
+                interp_actions = raw_action[np.newaxis, :]
             # Execute the interpolated actions one by one
             for act in interp_actions:
                 ctrl_freq = args.ctrl_freq
@@ -280,16 +258,17 @@ def model_inference(args, config, play_robot):
                     print(f"[Warning] Loop overran. Elapsed time: {elapsed:.2f}s.")
             t += 1
             
-            print("Published Step: ", t)
+            print(f"Published step: {t}")
             pre_action = action.copy()
     
-    print("Loop finished or quitted.")
+    print("Loop finished.")
     input("Press enter to delete robot...")
-    play_robot.set_target_end(RIGHT0[-1], blocking=False)
-    play_robot.set_target_joint_q(RIGHT0[:6], use_planning=False, blocking=False)   
+    play_robot.set_target_end(right0[-1], blocking=False)
+    play_robot.set_target_joint_q(right0[:6], use_planning=False, blocking=False)
+    time.sleep(1) 
     del play_robot
-    cv2.destroyAllWindows()
-    cam_high_pipeline.stop()
+    pipeline_front.stop()
+    pipeline_right.stop()
     print("Play robot successfully deleted.")
 
 
@@ -299,20 +278,6 @@ def get_arguments():
                         help='Maximum number of action publishing steps', default=10000, required=False)
     parser.add_argument('--seed', action='store', type=int, 
                         help='Random seed', default=None, required=False)
-
-    parser.add_argument('--img_front_topic', action='store', type=str, help='img_front_topic',
-                        default='/camera_f/color/image_raw', required=False)
-    parser.add_argument('--img_left_topic', action='store', type=str, help='img_left_topic',
-                        default='/camera_l/color/image_raw', required=False)
-    parser.add_argument('--img_right_topic', action='store', type=str, help='img_right_topic',
-                        default='/camera_r/color/image_raw', required=False)
-    
-    parser.add_argument('--img_front_depth_topic', action='store', type=str, help='img_front_depth_topic',
-                        default='/camera_f/depth/image_raw', required=False)
-    parser.add_argument('--img_left_depth_topic', action='store', type=str, help='img_left_depth_topic',
-                        default='/camera_l/depth/image_raw', required=False)
-    parser.add_argument('--img_right_depth_topic', action='store', type=str, help='img_right_depth_topic',
-                        default='/camera_r/depth/image_raw', required=False)
     
     parser.add_argument('--ctrl_freq', action='store', type=int, 
                         help='The control frequency of the robot',
@@ -328,9 +293,6 @@ def get_arguments():
 
     parser.add_argument('--use_actions_interpolation', action='store_true',
                         help='Whether to interpolate the actions if the difference is too large',
-                        default=False, required=False)
-    parser.add_argument('--use_depth_image', action='store_true', 
-                        help='Whether to use depth images',
                         default=False, required=False)
     
     parser.add_argument('--disable_puppet_arm', action='store_true',
@@ -350,7 +312,8 @@ def get_arguments():
 
 
 def main():
-    global cam_high_pipeline
+    global pipeline_front
+    global pipeline_right
     
     args = get_arguments()
     
@@ -359,14 +322,18 @@ def main():
     teacher_robot = None
     
     # Init Realsense Camera
-    cam_high_pipeline = rs.pipeline()
-    cam_high_config = rs.config()
-    cam_high_config.enable_device('244622072764')
-    cam_high_config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    # Start images streaming
-    cam_high_profile = cam_high_pipeline.start(cam_high_config)
-    # profile = pipeline.get_active_profile()
-    # _ = profile.get_stream(rs.stream.color)
+    pipeline_front = rs.pipeline()
+    config_front = rs.config()
+    config_front.enable_device('244622072764')
+    config_front.enable_stream(rs.stream.color, record_img_width, record_img_height, rs.format.bgr8, 30)
+    pipeline_front.start(config_front)
+
+    pipeline_right = rs.pipeline()
+    config_right = rs.config()
+    config_right.enable_device('207522077736')
+    config_right.enable_stream(rs.stream.color, record_img_width, record_img_height, rs.format.bgr8, 30)
+    pipeline_right.start(config_right)
+
     print("Airbot operator and cameras successfully initialized.")
 
     if args.seed is not None:
@@ -379,13 +346,15 @@ def main():
         ###### End of the Task Loop ######
     except Exception as e:
         print(f"Exception occurred during model inference: {e}")
-        play_robot.set_target_end(RIGHT0[-1], blocking=False)
-        play_robot.set_target_joint_q(RIGHT0[:6], use_planning=False, blocking=False)   
+        play_robot.set_target_end(right0[-1], blocking=False)
+        play_robot.set_target_joint_q(right0[:6], use_planning=False, blocking=False)
+        time.sleep(1) 
         del play_robot
-        cv2.destroyAllWindows()
-        cam_high_pipeline.stop()
+        pipeline_front.stop()
+        pipeline_right.stop()
         traceback.print_exc()
-
+        
 
 if __name__ == '__main__':
     main()
+    
