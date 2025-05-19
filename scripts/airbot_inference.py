@@ -5,28 +5,33 @@
 """
 
 import argparse
+import sys
+import threading
 import time
 import yaml
 from collections import deque
-import traceback
-import copy
 
 import numpy as np
-# import rospy
 import torch
 from PIL import Image as PImage
-import airbot
-import pyrealsense2 as rs
+import cv2
 
 from scripts.airbot_model import create_model
 
+import pyrealsense2 as rs
+import airbot
+import queue
+import traceback
+# import imageio
 
 # sys.path.append("./")
 
-CAMERA_NAMES = ['cam_high', 'cam_right_wrist']  # , 'cam_left_wrist'
 # Initialize the realsense cameras
 record_img_width = 640
 record_img_height = 480
+CAMERA_NAMES = ['cam_high', 'cam_right_wrist']
+# CAMERA_NAMES = ['cam_high']
+empty_image = np.zeros((record_img_height, record_img_width, 3), dtype=np.uint8)
 
 observation_window = None
 
@@ -35,28 +40,23 @@ lang_embeddings = None
 # debug
 preload_images = None
 
-# Initial pose of the robot arm
-right0 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-right1 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]
-
 # Initialize the model
 def make_policy(args):
-    print(f"Loading model from {args.pretrained_model_name_or_path}...")
     with open(args.config_path, "r") as fp:
         config = yaml.safe_load(fp)
     args.config = config
-    
+
     # pretrained_text_encoder_name_or_path = "google/t5-v1_1-xxl"
     pretrained_vision_encoder_name_or_path = "google/siglip-so400m-patch14-384"
     model = create_model(
-        args=args.config, 
+        args=args.config,
         dtype=torch.bfloat16,
         pretrained=args.pretrained_model_name_or_path,
         # pretrained_text_encoder_name_or_path=pretrained_text_encoder_name_or_path,
         pretrained_vision_encoder_name_or_path=pretrained_vision_encoder_name_or_path,
         control_frequency=args.ctrl_freq,
     )
-    print(f"Model successfully loaded from {args.pretrained_model_name_or_path}.")
+
     return model
 
 
@@ -67,7 +67,8 @@ def set_seed(seed):
 
 # Interpolate the actions to make the robot move smoothly
 def interpolate_action(args, prev_action, cur_action):
-    steps = np.concatenate((np.array(args.arm_steps_length), np.array(args.arm_steps_length)), axis=0)
+    # steps = np.concatenate((np.array(args.arm_steps_length), np.array(args.arm_steps_length)), axis=0)
+    steps = np.array(args.arm_steps_length)
     diff = np.abs(cur_action - prev_action)
     step = np.ceil(diff / steps).astype(int)
     step = np.max(step)
@@ -90,9 +91,6 @@ def get_config(args):
 # Update the observation window buffer
 def update_observation_window(config, robot):
     global observation_window
-    global pipeline_front
-    global pipeline_right
-    
     if observation_window is None:
         observation_window = deque(maxlen=2)
 
@@ -108,24 +106,17 @@ def update_observation_window(config, robot):
             }
         )
 
-    # Get images
-    frames_front = pipeline_front.wait_for_frames()
-    frames_right = pipeline_right.wait_for_frames()
-    color_frame_front = frames_front.get_color_frame()
-    color_frame_right = frames_right.get_color_frame()
-    
-    if not color_frame_front or not color_frame_right:
-        return
-    img_front = np.asanyarray(color_frame_front.get_data())
-    img_right = np.asanyarray(color_frame_right.get_data())
-    
+    # Get image
+    img_front, img_right = frame_queue.get()
+    # img_front = frame_queue.get()
+
     # Get robot state
     q = robot.get_current_joint_q()
     eef = robot.get_current_end()
     eef = 0.0 if eef < 0.05 else 1.0 if eef > 0.95 else eef
     qpos = q + [eef]
+
     qpos = torch.tensor(qpos, dtype=torch.float).cuda()
-    
     observation_window.append(
         {
             'qpos': qpos,
@@ -142,134 +133,40 @@ def update_observation_window(config, robot):
 def inference_fn(config, policy, t):
     global observation_window
     global lang_embeddings
-    
-    print(f"Start inference: t={t}")
-    time1 = time.time()     
+
+    print(f"Start inference_thread_fn: t={t}")
+    time1 = time.time()
 
     # fetch images in sequence [front, right, left]
     image_arrs = [
         observation_window[-2]['images'][config['camera_names'][0]],
         observation_window[-2]['images'][config['camera_names'][1]],
-        # observation_window[-2]['images'][config['camera_names'][2]],
-        
+        empty_image,
         observation_window[-1]['images'][config['camera_names'][0]],
-        observation_window[-1]['images'][config['camera_names'][1]]
-        # observation_window[-1]['images'][config['camera_names'][2]]
+        observation_window[-1]['images'][config['camera_names'][1]],
+        empty_image
     ]
-    
+
     images = [PImage.fromarray(arr) if arr is not None else None
                 for arr in image_arrs]
-    
+
     # get last qpos in shape [7, ]
     proprio = observation_window[-1]['qpos']
     # unsqueeze to [1, 7]
     proprio = proprio.unsqueeze(0)
-    
-    # actions shaped as [1, 64, 7]
+
+    # actions shaped as [1, 64, 14] in format [left, right]
     actions = policy.step(
         proprio=proprio,
         images=images,
-        text_embeds=lang_embeddings 
+        text_embeds=lang_embeddings
     ).squeeze(0).cpu().numpy()
     # print(f"inference_actions: {actions.squeeze()}")
-    
+
     print(f"Model inference time: {time.time() - time1} s")
-    
-    # print(f"Finish inference_thread_fn: t={t}")
+
+    print(f"Finish inference_thread_fn: t={t}")
     return actions
-
-
-# Main loop for the manipulation task
-def model_inference(args, config, play_robot):
-    global lang_embeddings
-    
-    # Load rdt model
-    policy = make_policy(args)
-    
-    lang_dict = torch.load(args.lang_embeddings_path)
-    print(f"Loaded language embeddings from {args.lang_embeddings_path}")
-    # print(f"Running with instruction: \"{lang_dict['instruction']}\" from \"{lang_dict['name']}\"")
-    lang_embeddings = lang_dict  # ["embeddings"]
-    
-    max_publish_step = config['episode_len']
-    chunk_size = config['chunk_size']
-    
-    # Back to the initial position
-    play_robot.set_target_end(right1[-1], blocking=False)
-    play_robot.set_target_joint_q(right1[:6], use_planning=False, blocking=False)
-    input("Press enter to the initial pose...")
-    play_robot.set_target_end(right0[-1], blocking=False)
-    play_robot.set_target_joint_q(right0[:6], use_planning=False, blocking=False)
-    input("Press enter to start the task...")
-
-    # Initialize the previous action to be the initial robot state
-    pre_action = np.zeros(config['state_dim'])
-    pre_action[:7] = np.array(
-        copy.deepcopy(right0)
-    )
-    action = None
-    
-    # cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
-
-    # Inference loop
-    with torch.inference_mode():
-        # The current time step
-        t = 0
-        action_buffer = np.zeros([chunk_size, config['state_dim']])
-        
-        print("Start the inference loop...")
-        while t < max_publish_step:
-            # TODO: add a key interruption w/o cv2
-            # Update observation window
-            update_observation_window(config, play_robot)
-            # image_to_show = update_observation_window(config, play_robot)
-            # cv2.imshow('RealSense', image_to_show)
-            
-            # When coming to the end of the action chunk
-            if t % chunk_size == 0:
-                # Start inference
-                action_buffer = inference_fn(config, policy, t).copy()
-            
-            raw_action = action_buffer[t % chunk_size]
-            # Interpolate the original action sequence
-            if args.use_actions_interpolation:
-                # print(f"Time {t}, pre {pre_action}, act {action}")
-                interp_actions = interpolate_action(args, pre_action, raw_action)
-            else:
-                interp_actions = raw_action[np.newaxis, :]
-            # Execute the interpolated actions one by one
-            for act in interp_actions:
-                ctrl_freq = args.ctrl_freq
-                interval = 1.0 / ctrl_freq
-
-                start_time = time.time()
-
-                right_action = act[:7].tolist()
-                # right_action = act[7:14]
-                if not args.disable_puppet_arm:
-                    play_robot.set_target_end(right_action[-1], blocking=False)
-                    play_robot.set_target_joint_q(right_action[:6], use_planning=False, blocking=False)
-                
-                elapsed = time.time() - start_time
-                sleep_time = interval - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                else:
-                    print(f"[Warning] Loop overran. Elapsed time: {elapsed:.2f}s.")
-            t += 1
-            
-            print(f"Published step: {t}")
-            pre_action = action.copy()
-    
-    print("Loop finished.")
-    input("Press enter to delete robot...")
-    play_robot.set_target_end(right0[-1], blocking=False)
-    play_robot.set_target_joint_q(right0[:6], use_planning=False, blocking=False)
-    time.sleep(1) 
-    del play_robot
-    pipeline_front.stop()
-    pipeline_right.stop()
-    print("Play robot successfully deleted.")
 
 
 def get_arguments():
@@ -289,7 +186,7 @@ def get_arguments():
     # TODO: set the arm_steps_length for Airbot
     parser.add_argument('--arm_steps_length', action='store', type=float, 
                         help='The maximum change allowed for each joint per timestep',
-                        default=[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.2], required=False)
+                        default=[0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.3], required=False)
 
     parser.add_argument('--use_actions_interpolation', action='store_true',
                         help='Whether to interpolate the actions if the difference is too large',
@@ -311,50 +208,156 @@ def get_arguments():
     return args
 
 
-def main():
-    global pipeline_front
-    global pipeline_right
-    
-    args = get_arguments()
-    
-    # Initialize the bot
-    play_robot = airbot.create_agent(can_interface="can1", end_mode="gripper")
-    teacher_robot = None
-    
-    # Init Realsense Camera
-    pipeline_front = rs.pipeline()
-    config_front = rs.config()
-    config_front.enable_device('244622072764')
-    config_front.enable_stream(rs.stream.color, record_img_width, record_img_height, rs.format.bgr8, 30)
-    pipeline_front.start(config_front)
+def camera_thread():
+    # Set the record image parameters
+    color_image_front = np.zeros((record_img_height, record_img_width, 3), dtype=np.uint8)
+    color_image_right = np.zeros((record_img_height, record_img_width, 3), dtype=np.uint8)
 
-    pipeline_right = rs.pipeline()
-    config_right = rs.config()
-    config_right.enable_device('207522077736')
-    config_right.enable_stream(rs.stream.color, record_img_width, record_img_height, rs.format.bgr8, 30)
-    pipeline_right.start(config_right)
+    while True:
+        if thread_flag:
+            # receive the frames
+            frames_front = pipeline_front.wait_for_frames()
+            color_frame_front = frames_front.get_color_frame()
+            frames_right = pipeline_right.wait_for_frames()
+            color_frame_right = frames_right.get_color_frame()
 
-    print("Airbot operator and cameras successfully initialized.")
+            # store the frames only when successfully gotten
+            if color_frame_front:
+                color_image_front = np.asanyarray(color_frame_front.get_data())
+            if color_frame_right:
+                color_image_right = np.asanyarray(color_frame_right.get_data())
+            if frame_queue.full():
+                try:
+                    frame_queue.get_nowait() # leave out the old frames
+                except queue.Empty:
+                    pass
+            frame_queue.put((color_image_front, color_image_right)) # only store the newest ones
+            # frame_queue.put(color_image_front) # only store the newest ones
 
-    if args.seed is not None:
-        set_seed(args.seed)
-    config = get_config(args)
-    
+
+
+if __name__ == '__main__':
     try:
-        ###### Main Loop of the Task ######
-        model_inference(args, config, play_robot)
-        ###### End of the Task Loop ######
-    except Exception as e:
-        print(f"Exception occurred during model inference: {e}")
-        play_robot.set_target_end(right0[-1], blocking=False)
+        args = get_arguments()
+        if args.seed is not None:
+            set_seed(args.seed)
+        config = get_config(args)
+
+        pipeline_front = rs.pipeline()
+        config_front = rs.config()
+        config_front.enable_device('244622072764')
+        config_front.enable_stream(rs.stream.color, record_img_width, record_img_height, rs.format.bgr8, 30)
+        pipeline_front.start(config_front)
+
+        pipeline_right = rs.pipeline()
+        config_right = rs.config()
+        config_right.enable_device('207522077736')
+        config_right.enable_stream(rs.stream.color, record_img_width, record_img_height, rs.format.bgr8, 30)
+        pipeline_right.start(config_right)
+
+        play_robot = airbot.create_agent(can_interface="can1", end_mode="gripper")
+
+        time.sleep(1)
+        print("Cameras and Robot Initialization Succeeded -----")
+
+        frame_queue = queue.Queue(maxsize=1)
+        
+        thread_flag = True
+
+        threading.Thread(target=camera_thread, daemon=True).start()
+        time.sleep(3)
+
+        # Load rdt model
+        print("Start to load model -----")
+        policy = make_policy(args)
+        print(f"Model successfully loaded from {args.pretrained_model_name_or_path}.")
+
+        lang_dict = torch.load(args.lang_embeddings_path)
+        print(f"Running with instruction: \"{lang_dict['instruction']}\" from \"{lang_dict['name']}\"")
+        lang_embeddings = lang_dict["embeddings"]
+
+        max_publish_step = config['episode_len']
+        chunk_size = config['chunk_size']
+
+        # Initialize position of the airbot
+        right0 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5]
+        # right1 = [0.0, -0.1, 0.15, -1.5, 0.1, 1.5, 0.0]
+        right1 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        play_robot.set_target_end(right0[6], blocking=False)
         play_robot.set_target_joint_q(right0[:6], use_planning=False, blocking=False)
-        time.sleep(1) 
+        time.sleep(1)
+        # input("Initialized Pose 0. Press enter to continue")
+        play_robot.set_target_end(right1[6], blocking=False)
+        play_robot.set_target_joint_q(right1[:6], use_planning=False, blocking=False)
+        input("Initialized Pose 1. Press enter to start the task")
+
+        # Initialize the previous action to be the initial robot state
+        pre_action = np.zeros(config['state_dim'])
+        pre_action[:7] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        action = None
+        
+        time.sleep(1)
+
+        # Inference loop
+        with torch.inference_mode():
+            # The current time step
+            t = 0
+            action_buffer = np.zeros([chunk_size, config['state_dim']])
+
+            while t < max_publish_step:
+                # Update observation window
+                update_observation_window(config, play_robot)
+
+                # When coming to the end of the action chunk
+                if t % chunk_size == 0:
+                    # Start inference
+                    action_buffer = inference_fn(config, policy, t).copy()
+                    # input("Press Enter to run the next step of action...")
+
+                raw_action = action_buffer[t % chunk_size]
+                action = raw_action
+                # Interpolate the original action sequence
+                if args.use_actions_interpolation:
+                    print(f"Time {t}, pre {pre_action}, act {action}")
+                    interp_actions = interpolate_action(args, pre_action, action)
+                else:
+                    interp_actions = action[np.newaxis, :]
+                # Execute the interpolated actions one by one
+                ctrl_freq = args.ctrl_freq
+                interval = 1.0 / ctrl_freq
+                for act in interp_actions:
+                    start_time = time.time()
+
+                    right_action = act[:7].tolist()
+                    if not args.disable_puppet_arm:
+                        play_robot.set_target_end(right_action[6], blocking=False)
+                        play_robot.set_target_joint_q(right_action[:6], use_planning=False, blocking=False)
+
+                    elapsed = time.time() - start_time
+                    sleep_time = interval - elapsed
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                    else:
+                        print(f"[Warning] Loop overran. Elapsed time: {elapsed:.2f}s.")
+                t += 1
+
+                print("Published Step", t)
+                pre_action = action.copy()
+                
+        thread_flag = False
+        play_robot.set_target_end(0.0, blocking=False)
+        time.sleep(1)
+        del play_robot
+        pipeline_front.stop()
+        pipeline_right.stop()
+        print('End')
+
+    except Exception as e:
+        thread_flag = False
+        print(e)
         del play_robot
         pipeline_front.stop()
         pipeline_right.stop()
         traceback.print_exc()
+        print('End')
         
-
-if __name__ == '__main__':
-    main()
-    
