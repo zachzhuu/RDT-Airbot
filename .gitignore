@@ -183,7 +183,6 @@ wandb/
 hostfile.txt
 .deepspeed_env
 
-w2f6/
-
 *.out
 *.error
+lang/

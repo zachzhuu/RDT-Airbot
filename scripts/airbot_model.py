@@ -12,11 +12,11 @@ from models.rdt_runner import RDTRunner
 
 
 # The indices that the raw vector should be mapped to in the unified action vector
-AGILEX_STATE_INDICES = [
-    STATE_VEC_IDX_MAPPING[f"left_arm_joint_{i}_pos"] for i in range(6)
-] + [
-    STATE_VEC_IDX_MAPPING["left_gripper_open"]
-] + [
+AIRBOT_STATE_INDICES = [
+#     STATE_VEC_IDX_MAPPING[f"left_arm_joint_{i}_pos"] for i in range(6)
+# ] + [
+#     STATE_VEC_IDX_MAPPING["left_gripper_open"]
+# ] + [
     STATE_VEC_IDX_MAPPING[f"right_arm_joint_{i}_pos"] for i in range(6)
 ] + [
     STATE_VEC_IDX_MAPPING[f"right_gripper_open"]
@@ -167,16 +167,16 @@ class RoboticDiffusionTransformerModel(object):
 
         Args:
             joints (torch.Tensor): The joint proprioception to be formatted. 
-                qpos ([B, N, 14]).
+                qpos ([B, N, 7]).
 
         Returns:
             state (torch.Tensor): The formatted vector for RDT ([B, N, 128]). 
         """
-        # Rescale the gripper to the range of [0, 1]
-        joints = joints / torch.tensor(
-            [[[1, 1, 1, 1, 1, 1, 4.7908, 1, 1, 1, 1, 1, 1, 4.7888]]],
-            device=joints.device, dtype=joints.dtype
-        )
+        # No need to normalize the gripper for Airbot
+        # joints = joints / torch.tensor(
+        #     [[[1, 1, 1, 1, 1, 1, 4.7908, 1, 1, 1, 1, 1, 1, 4.7888]]],
+        #     device=joints.device, dtype=joints.dtype
+        # )
         
         B, N, _ = joints.shape
         state = torch.zeros(
@@ -184,13 +184,13 @@ class RoboticDiffusionTransformerModel(object):
             device=joints.device, dtype=joints.dtype
         )
         # Fill into the unified state vector
-        state[:, :, AGILEX_STATE_INDICES] = joints
+        state[:, :, AIRBOT_STATE_INDICES] = joints
         # Assemble the mask indicating each dimension's availability 
         state_elem_mask = torch.zeros(
             (B, self.args["model"]["state_token_dim"]),
             device=joints.device, dtype=joints.dtype
         )
-        state_elem_mask[:, AGILEX_STATE_INDICES] = 1
+        state_elem_mask[:, AIRBOT_STATE_INDICES] = 1
         return state, state_elem_mask
 
     def _unformat_action_to_joint(self, action):
@@ -205,16 +205,17 @@ class RoboticDiffusionTransformerModel(object):
             joints (torch.Tensor): The unformatted robot joint action. 
                 qpos ([B, N, 14]).
         """
-        action_indices = AGILEX_STATE_INDICES
+        action_indices = AIRBOT_STATE_INDICES
         joints = action[:, :, action_indices]
         
         # Rescale the gripper back to the action range
         # Note that the action range and proprioception range are different
         # for Mobile ALOHA robot
-        joints = joints * torch.tensor(
-            [[[1, 1, 1, 1, 1, 1, 11.8997, 1, 1, 1, 1, 1, 1, 13.9231]]],
-            device=joints.device, dtype=joints.dtype
-        )
+        # No need to rescale the gripper for Airbot
+        # joints = joints * torch.tensor(
+        #     [[[1, 1, 1, 1, 1, 1, 11.8997, 1, 1, 1, 1, 1, 1, 13.9231]]],
+        #     device=joints.device, dtype=joints.dtype
+        # )
         
         return joints
 
@@ -285,7 +286,7 @@ class RoboticDiffusionTransformerModel(object):
         image_embeds = image_embeds.reshape(-1, self.vision_model.hidden_size).unsqueeze(0)
 
         # Prepare the proprioception states and the control frequency
-        joints = proprio.to(device).unsqueeze(0)   # (1, 1, 14)
+        joints = proprio.to(device).unsqueeze(0)   # (1, 1, 7)
         states, state_elem_mask = self._format_joint_to_state(joints)    # (1, 1, 128), (1, 128)
         states, state_elem_mask = states.to(device, dtype=dtype), state_elem_mask.to(device, dtype=dtype)
         states = states[:, -1:, :]  # (1, 1, 128)
